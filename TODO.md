@@ -179,15 +179,14 @@ covered.**
 
 ### Phase 3 (fork, branch `virtual-plugin`)
 
-- `earthaccess/plugins/registry.py`: `_KNOWN` += `("vds", "earthaccess-plugin-vds",
-  "Virtual datasets: virtualize granules, create and append icechunk / kerchunk
-  stores")` + test.
-- `earthaccess/api.py::open()`: route single icechunk-sniffed `str`/`Path`
-  (`icechunk://`, `.icechunk` suffix, local dir with
-  `snapshots/1CECHNKREP0F1RSTCMT0`) and `DataCollection` → `open_virtual()`;
-  dispatch on `Asset.format` for asset/job inputs; **implement
-  `DataCollection.virtual_collection_url()`** (missing). Do not intercept bare
-  `.json`/`.parquet`. Tests: tmp marker dir, mocked `open_virtual`, routing table.
+**Done:** `_KNOWN` now includes the `vds` row; `ea.open()` dispatches
+`Asset(format=icechunk|kerchunk)` (single or list, incl. plugin jobs) and
+icechunk-sniffed paths / `DataCollection` to `open_virtual(..., load=...)`
+(bare `.parquet`/`.json` are not intercepted); `DataCollection.virtual_collection_url()`
+now exists (reads the `VIRTUAL COLLECTION` RelatedUrl subtype). Top-level tests:
+`tests/unit/test_open_dispatch.py` (8 cases) + vds in the registry row test;
+860 unit tests green. **Remaining:**
+
 - `pyproject.toml`: re-pin spec to the `v0.3.0` tag + refresh `uv.lock`; add
   optional extra `vds = ["earthaccess-plugin-vds @ git+…"]`.
 - Notebooks: `docs/tutorials/plugins/vds.ipynb` (acceptance, minimal kwargs),

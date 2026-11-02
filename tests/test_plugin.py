@@ -312,3 +312,46 @@ def test_capabilities_advertise_virtualize_and_append() -> None:
     assert caps.formats == frozenset({"icechunk", "kerchunk"})
     assert {"virtualize", "append"} <= {str(op) for op in caps.operations}
     assert "icechunk" in str(caps)
+
+
+# ---------------------------------------------------------------------------
+# end to end: the Asset the plugin returns is openable by earthaccess.open
+# ---------------------------------------------------------------------------
+
+
+def test_earthaccess_open_opens_the_icechunk_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    import earthaccess
+
+    store = str(tmp_path / "sst.icechunk")
+    job, status = _request(
+        monkeypatch, make_vds("2013-01-01"), store=store, concat_dim="time"
+    )
+    assert status is JobStatus.SUCCEEDED, job.info()
+    (asset,) = job.results()
+
+    ds = earthaccess.open(asset)
+
+    assert ds.sizes["time"] == 1
+
+
+def test_earthaccess_open_opens_the_kerchunk_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    import earthaccess
+
+    store = str(tmp_path / "sst_refs.parquet")
+    job, status = _request(
+        monkeypatch,
+        make_vds("2013-01-01"),
+        store=store,
+        format="kerchunk",
+        concat_dim="time",
+    )
+    assert status is JobStatus.SUCCEEDED, job.info()
+    (asset,) = job.results()
+
+    ds = earthaccess.open(asset)
+
+    assert ds.sizes["time"] == 1
