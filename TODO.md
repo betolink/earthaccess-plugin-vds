@@ -139,6 +139,11 @@ covered.**
    the **open step** on a Dask cluster: today `ProgressExecutor` is a local
    thread pool (that is why no credential is ever serialized), and an active
    Client is only surfaced as `info()["dashboard"]`.
+   Core now ships `ea.distribute_credentials(env, client=/cluster=/scheduler=)`
+   (fork `virtual-plugin`): it prefers Coiled's private `send_private_envs`,
+   refuses plain Dask unless `private=False`, sends the login token as
+   `EARTHDATA_TOKEN`, and returns only key names. Use it to prepare workers,
+   then have the plugin rebuild the registry from the environment in each task.
 2. **Cluster executor** — once (1) lands, dispatch `ProgressExecutor` tasks via
    `client.submit` (distributed futures, `client.cancel`), and optionally attach
    `distributed.progress`. Dask's own `ProgressBar` needs a Dask collection;
@@ -151,6 +156,19 @@ covered.**
 
 ### Phase 2 — done notes
 
+- **Bug fixed after a real run:** `LazyEDLAuthHandle.token()` calls
+  `earthaccess.get_edl_token()`, which compared `Auth.token` to `str`; the EDL
+  login stores the token *response mapping* (`access_token` + metadata), so the
+  accessor raised `RuntimeError: Token is not available or not in expected
+  format` and every vds job failed at `0/N` before opening a granule. Fixed in
+  core (`get_edl_token` accepts the mapping or a bare string, tests in
+  `tests/unit/test_edl_token.py`) and the plugin now falls back to
+  `earthaccess.__auth__.token["access_token"]` if an older core raises.
+  Verified for real with MUR granules: icechunk create+append and kerchunk
+  create+append both reach 4 time steps and `ea.open(asset)` reads them.
+- The plugin's `distributed` extra installs `dask-labextension>=7.0` so the
+  cluster/dashboard can be monitored from JupyterLab.
+
 - **Progress:** `progress.py` adds `ProgressState` (thread-safe `opened`/`failed`/
   `total`/`phase`/`dashboard`/`percent`), `ProgressExecutor` (a
   `concurrent.futures.Executor` that VirtualiZarr drives via `map`; counts each
@@ -161,6 +179,12 @@ covered.**
   DataTree opens; `plugin._request` creates the state/executor and returns a
   `VirtualJob`. Tests cover live `job.info()` mid-flight, the 100% terminal
   state, executor counting and cancellation.
+- **Credential distribution:** `ea.distribute_credentials(...)` in core
+  (`earthaccess/auth/distribute.py`, exported at the top level) — Coiled private
+  channel by default, explicit `private=False` fallback via `client.run`, token
+  defaults to the current login, env validation, keys-only summary. 8
+  top-level tests in `tests/unit/test_distribute_credentials.py` (fork suite
+  868 green).
 - **Notebook:** `docs/tutorials/plugins/vds.ipynb` (fork) replaces
   `icechunk_virtual.ipynb`: search → request → `wait_with_progress` → `ea.open`
   → append both months → same for kerchunk parquet (versioned href), with

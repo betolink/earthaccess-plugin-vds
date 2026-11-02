@@ -71,17 +71,22 @@ def validate_granules(granules: Sequence[Any]) -> None:
 
 
 def _edl_token(auth: AuthHandle | None) -> str:
-    """The EDL bearer token, from the auth handle or earthaccess's login state."""
+    """The EDL bearer token, from the auth handle or earthaccess's login state.
+
+    Older earthaccess releases raise from ``AuthHandle.token()`` because their
+    ``get_edl_token()`` expects a string while ``Auth.token`` is the EDL token
+    response mapping; fall back to reading that mapping directly.
+    """
     if auth is not None:
-        return auth.token()
+        try:
+            return auth.token()
+        except RuntimeError:
+            pass
     token = getattr(earthaccess.__auth__, "token", None)
-    if not token or "access_token" not in token:
-        msg = (
-            "You must be logged in to use indirect access. "
-            "Call earthaccess.login() first."
-        )
-        raise ValueError(msg)
-    return token["access_token"]
+    if isinstance(token, dict) and token.get("access_token"):
+        return str(token["access_token"])
+    msg = "You must be logged in to use indirect access. Call earthaccess.login() first."
+    raise ValueError(msg)
 
 
 def build_obstore_registry(

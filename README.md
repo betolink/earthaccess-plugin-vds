@@ -10,7 +10,8 @@ Built on [`earthaccess-plugin-spec`](https://github.com/earthaccess-dev/earthacc
 
 ```bash
 pip install "earthaccess-plugin-vds"          # icechunk only
-pip install "earthaccess-plugin-vds[kerchunk]"  # kerchunk-parquet support
+pip install "earthaccess-plugin-vds[kerchunk]"    # kerchunk-parquet support
+pip install "earthaccess-plugin-vds[distributed]" # Dask client + JupyterLab dashboard
 ```
 
 ## Usage

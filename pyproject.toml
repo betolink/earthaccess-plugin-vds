@@ -28,7 +28,7 @@ vds = "earthaccess_vds:VDSPlugin"
 
 [project.optional-dependencies]
 kerchunk = ["kerchunk>=0.2.9", "pandas", "fastparquet>=2023.4.0", "fsspec", "s3fs"]
-distributed = ["distributed"]
+distributed = ["distributed", "dask-labextension>=7.0"]
 test = ["pytest >=8.0", "mypy >=1.11", "ruff >=0.6"]
 
 [project.urls]
