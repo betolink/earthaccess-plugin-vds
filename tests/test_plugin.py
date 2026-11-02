@@ -357,3 +357,66 @@ def test_earthaccess_open_opens_the_kerchunk_store(
 
     assert isinstance(ds, xr.Dataset)
     assert ds.sizes["time"] == 1
+
+
+# ---------------------------------------------------------------------------
+# progress reporting
+# ---------------------------------------------------------------------------
+
+
+def test_job_info_reports_live_virtualize_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    import time
+
+    gate = threading.Event()
+
+    def slow_virtualize(
+        granules: Any, *, progress: Any = None, parallel: Any = None, **kwargs: Any
+    ) -> xr.Dataset:
+        del kwargs
+        progress.start("virtualize", total=2)
+        parallel.submit(gate.wait)
+        parallel.submit(gate.wait)
+        while progress.opened < 2:
+            time.sleep(0.01)
+        return make_vds("2013-01-01")
+
+    monkeypatch.setattr("earthaccess_vds.engine.virtualize", slow_virtualize)
+    results = sample_result_set(
+        umms=[{"GranuleUR": "G1"}, {"GranuleUR": "G2"}],
+    )
+    job = _plugin().request(results, concat_dim="time")
+
+    info = job.info()
+    assert info["phase"] == "virtualize"
+    assert info["total"] == 2
+    assert info["opened"] == 0
+    assert info["percent"] == 0.0
+    assert "cancel" in job.capabilities
+
+    gate.set()
+    assert job.wait(timeout=10) is JobStatus.SUCCEEDED, job.info()
+    done = job.info()
+    assert done["phase"] == "done"
+    assert done["opened"] == 2
+    assert done["percent"] == 100.0
+
+
+def test_progress_executor_counts_and_cancels() -> None:
+    import time
+
+    from earthaccess_vds.progress import ProgressExecutor, ProgressState
+
+    state = ProgressState()
+    state.start("virtualize", total=4)
+    executor = ProgressExecutor(state, show_progress=False)
+
+    assert list(executor.map(lambda value: value * 2, range(4))) == [0, 2, 4, 6]
+    assert state.snapshot()["opened"] == 4
+
+    blocking = executor.submit(time.sleep, 5)
+    assert executor.cancel() is True
+    assert blocking.cancelled()
+    executor.shutdown(wait=False, cancel_futures=True)

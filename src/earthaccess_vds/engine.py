@@ -65,6 +65,7 @@ def virtualize(  # noqa: PLR0913, C901
     reference_dir: str | None = None,
     tree: bool = False,
     auth: AuthHandle | None = None,
+    progress: Any = None,
     **xr_combine_kwargs: Any,
 ) -> xr.Dataset | xr.DataTree:
     """Create a virtual xarray Dataset from NASA Earthdata granules.
@@ -112,6 +113,9 @@ def virtualize(  # noqa: PLR0913, C901
     # network activity.
     resolved_parser = resolve_parser(parser, group=group if group != "/" else None)
 
+    if progress is not None:
+        progress.start("virtualize", total=len(granules))
+
     registry = build_obstore_registry(granules, access=access, auth=auth)
 
     def _open_once(parser_obj: Any, obj_registry: Any) -> xr.Dataset | xr.DataTree:
@@ -139,6 +143,9 @@ def virtualize(  # noqa: PLR0913, C901
     # DMR++ sidecars are not present.
     try:
         vds = _open_once(resolved_parser, registry)
+        if progress is not None and (tree or len(granules) == 1):
+            # A single open does not go through the executor.
+            progress.opened_one()
     except FileNotFoundError:
         if type(resolved_parser).__name__ != "DMRPPParser":
             raise
@@ -154,7 +161,11 @@ def virtualize(  # noqa: PLR0913, C901
             group=group if group != "/" else None,
         )
         registry = build_obstore_registry(granules, access=access, auth=auth)
+        if progress is not None:
+            progress.start("virtualize", total=len(granules))
         vds = _open_once(resolved_parser, registry)
+        if progress is not None and (tree or len(granules) == 1):
+            progress.opened_one()
 
     if not load:
         return vds

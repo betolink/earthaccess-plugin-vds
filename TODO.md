@@ -135,18 +135,36 @@ covered.**
    *config* (URLs, access mode, credentials endpoint — nothing secret), per-worker
    lazy `earthaccess.login(strategy="environment")` + registry build inside the
    task, typed error naming missing env vars. Test: `pickle.dumps` of every task
-   payload contains no token/key material.
-2. **`progress.py` + tests** — `ProgressExecutor` (concurrent.futures Executor
-   protocol; detects the active `distributed` Client; tqdm callbacks) and
-   `VirtualJob(Job)` (`_poll` → `{"opened", "total", "failed", "phase",
-   "dashboard"}`, `_cancel` = `client.cancel`). Wire `show_progress`/`parallel`
-   into `engine.virtualize` (it is a no-op option today).
+   payload contains no token/key material. This is the prerequisite for running
+   the **open step** on a Dask cluster: today `ProgressExecutor` is a local
+   thread pool (that is why no credential is ever serialized), and an active
+   Client is only surfaced as `info()["dashboard"]`.
+2. **Cluster executor** — once (1) lands, dispatch `ProgressExecutor` tasks via
+   `client.submit` (distributed futures, `client.cancel`), and optionally attach
+   `distributed.progress`. Dask's own `ProgressBar` needs a Dask collection;
+   VirtualiZarr needs a `concurrent.futures.Executor`, so the executor is the
+   right seam.
 3. **Review passes** — `source=` for kerchunk (works via
    `open_refs_store`+`combine`; only the icechunk path is covered by a test
    today), `s3://` write targets (env credentials; untested offline),
    `tree=True` handling, docs in `README.md` (done — keep in sync).
 
 ### Phase 2 — done notes
+
+- **Progress:** `progress.py` adds `ProgressState` (thread-safe `opened`/`failed`/
+  `total`/`phase`/`dashboard`/`percent`), `ProgressExecutor` (a
+  `concurrent.futures.Executor` that VirtualiZarr drives via `map`; counts each
+  finished granule, optional `tqdm` bar, cancel of pending futures) and
+  `VirtualJob(Job)` (`info()` merges the counters with the job status; `phase`
+  goes `virtualize → combine → write → done`; `cancel` capability auto-derived).
+  `engine.virtualize(progress=…)` starts the phase and counts single-granule /
+  DataTree opens; `plugin._request` creates the state/executor and returns a
+  `VirtualJob`. Tests cover live `job.info()` mid-flight, the 100% terminal
+  state, executor counting and cancellation.
+- **Notebook:** `docs/tutorials/plugins/vds.ipynb` (fork) replaces
+  `icechunk_virtual.ipynb`: search → request → `wait_with_progress` → `ea.open`
+  → append both months → same for kerchunk parquet (versioned href), with
+  progress/cancel notes. Nav + docs index updated.
 
 - `storage.py` resolves path / `s3://` / obstore `S3Store`|`LocalStore` /
   icechunk `Storage` (+`href=` for bare Storage) and derives the Asset

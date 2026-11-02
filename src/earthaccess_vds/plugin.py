@@ -92,9 +92,26 @@ class VDSPlugin(PluginBase):
     def _request(self, results: Any, options: VDSPlugin.Options) -> Any:
         granules = list(results) if results is not None else []
         output = _validate(granules, options)
-        return self.job(
-            lambda: _run(self._ctx.auth, granules, options),
+
+        from .progress import ProgressExecutor, ProgressState, VirtualJob
+
+        state = ProgressState()
+        if granules:
+            state.start("virtualize", total=len(granules))
+        executor = ProgressExecutor(state, show_progress=options.show_progress)
+
+        def work() -> Any:
+            try:
+                return _run(self._ctx.auth, granules, options, state, executor)
+            finally:
+                executor.shutdown(wait=False)
+
+        return VirtualJob(
+            work,
+            plugin=self.name,
             output=output,
+            state=state,
+            executor=executor,
         )
 
 
@@ -145,7 +162,13 @@ def _validate(granules: list[Any], options: VDSPlugin.Options) -> str:
     return "xarray" if options.load else "virtual"
 
 
-def _run(auth: Any, granules: list[Any], options: VDSPlugin.Options) -> Any:
+def _run(
+    auth: Any,
+    granules: list[Any],
+    options: VDSPlugin.Options,
+    state: Any,
+    executor: Any,
+) -> Any:
     """Virtualize, optionally merge, and either return a dataset or write a store."""
 
     from .engine import (
@@ -172,6 +195,8 @@ def _run(auth: Any, granules: list[Any], options: VDSPlugin.Options) -> Any:
             reference_dir=options.reference_dir,
             tree=options.tree,
             auth=auth,
+            parallel=executor,
+            progress=state,
             **options.combine_kwargs,
         )
 
@@ -184,8 +209,13 @@ def _run(auth: Any, granules: list[Any], options: VDSPlugin.Options) -> Any:
         msg = "tree=True cannot be persisted; store= needs a single Dataset"
         raise ValueError(msg)
 
+    state.set_phase("combine")
+
     if options.format == "icechunk":
-        return [_write_icechunk_sequence(delta=delta, options=options)]
+        state.set_phase("write")
+        return [
+            _write_icechunk_sequence(delta=delta, options=options, state=state)
+        ]
 
     target_exists = store_exists(options.store, format="kerchunk")
     dim = options.append_dim or options.concat_dim
@@ -205,10 +235,13 @@ def _run(auth: Any, granules: list[Any], options: VDSPlugin.Options) -> Any:
         pieces.append(materialize_coords(delta) if pieces else delta)
 
     vds = combine_virtual(pieces, concat_dim=dim)
+    state.set_phase("write")
     return [write_kerchunk(vds, options.store, replace=options.replace)]
 
 
-def _write_icechunk_sequence(*, delta: Any, options: VDSPlugin.Options) -> Asset:
+def _write_icechunk_sequence(
+    *, delta: Any, options: VDSPlugin.Options, state: Any
+) -> Asset:
     """Write source (if any) then the delta; icechunk appends natively."""
 
     from .engine import open_refs_store
