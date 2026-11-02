@@ -69,7 +69,10 @@ class VDSPlugin(PluginBase):
         reference_dir: str | None = None
         combine_kwargs: dict[str, Any] = field(default_factory=dict)
 
-        # --- execution (progress lands with the distributed work) ---
+        # --- execution ---
+        client: Any = None
+        """An existing ``distributed.Client``; per-granule opens run there."""
+
         show_progress: bool | None = None
 
     def _supports(self, results: Any) -> Capabilities:
@@ -98,7 +101,13 @@ class VDSPlugin(PluginBase):
         state = ProgressState()
         if granules:
             state.start("virtualize", total=len(granules))
-        executor = ProgressExecutor(state, show_progress=options.show_progress)
+        if options.client is not None:
+            state.dashboard = getattr(options.client, "dashboard_link", None)
+        executor = ProgressExecutor(
+            state,
+            show_progress=options.show_progress,
+            client=options.client,
+        )
 
         def work() -> Any:
             try:
@@ -135,6 +144,12 @@ def _has_data_links(granule: Any) -> bool | None:
 def _validate(granules: list[Any], options: VDSPlugin.Options) -> str:
     """Validate the request eagerly; return the job's output kind."""
 
+    if options.client is not None and not hasattr(options.client, "submit"):
+        msg = (
+            "client= must be a distributed.Client (or any object with submit()); "
+            f"got {type(options.client).__name__}"
+        )
+        raise TypeError(msg)
     if options.format not in _FORMATS:
         msg = f"Unsupported format {options.format!r}: use 'icechunk' or 'kerchunk'"
         raise ValueError(msg)

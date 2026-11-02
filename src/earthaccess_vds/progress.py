@@ -80,8 +80,10 @@ class ProgressState:
         self.update_dashboard()
 
     def update_dashboard(self) -> None:
+        if self.dashboard is not None:
+            return
         dashboard = dashboard_link()
-        if dashboard != self.dashboard:
+        if dashboard is not None:
             with self._lock:
                 self.dashboard = dashboard
 
@@ -129,10 +131,18 @@ class ProgressExecutor(Executor):
         *,
         max_workers: int | None = None,
         show_progress: bool | None = None,
+        client: Any = None,
         desc: str = "virtualize",
     ) -> None:
         self.state = state if state is not None else ProgressState()
-        self._pool = ThreadPoolExecutor(max_workers=max_workers)
+        self._client = client
+        self._pool = (
+            None if client is not None else ThreadPoolExecutor(max_workers=max_workers)
+        )
+        if client is not None:
+            dashboard = getattr(client, "dashboard_link", None)
+            if dashboard:
+                self.state.dashboard = dashboard
         self._futures: list[Future] = []
         self._lock = threading.Lock()
         self._desc = desc
@@ -144,7 +154,11 @@ class ProgressExecutor(Executor):
     # -- Executor protocol ---------------------------------------------------
 
     def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future:
-        future = self._pool.submit(fn, *args, **kwargs)
+        if self._client is not None:
+            future = self._client.submit(fn, *args, **kwargs)
+        else:
+            assert self._pool is not None
+            future = self._pool.submit(fn, *args, **kwargs)
         with self._lock:
             self._futures.append(future)
         future.add_done_callback(self._done)
@@ -187,13 +201,20 @@ class ProgressExecutor(Executor):
             from tqdm.auto import tqdm
         except ImportError:  # pragma: no cover - tqdm ships with dask
             return
-        self._bar = tqdm(total=self.state.total or None, desc=self._desc, unit="granule")
+        self._bar = tqdm(
+            total=self.state.total or None, desc=self._desc, unit="granule"
+        )
 
     def cancel(self) -> bool:
-        """Cancel not-yet-started tasks; return whether any was canceled."""
+        """Cancel pending tasks; return whether any cancellation was requested."""
 
         with self._lock:
             futures = list(self._futures)
+        if self._client is not None:
+            if not futures:
+                return False
+            self._client.cancel(futures)
+            return True
         return any(future.cancel() for future in futures)
 
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
@@ -202,7 +223,9 @@ class ProgressExecutor(Executor):
         self._closed = True
         if self._bar is not None:
             self._bar.close()
-        self._pool.shutdown(wait=wait, cancel_futures=cancel_futures)
+        if self._pool is not None:
+            self._pool.shutdown(wait=wait, cancel_futures=cancel_futures)
+        # A caller-supplied Client is never closed by the executor.
 
 
 class VirtualJob(Job):

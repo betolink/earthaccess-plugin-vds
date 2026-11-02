@@ -156,6 +156,19 @@ covered.**
 
 ### Phase 2 — done notes
 
+- **Cluster execution is in:** `Options.client` accepts an existing
+  `distributed.Client`; `ProgressExecutor` submits through `client.submit`
+  (counters via done-callbacks, cancel via `client.cancel`,
+  `info()["dashboard"]` from that client). The obstore registry is now
+  `LazyObjectStoreRegistry`: it holds the token client-side but pickles to a
+  credential-free `RegistryConfig`, so workers rebuild stores from their own
+  environment (`EARTHDATA_TOKEN`, `~/.netrc`, or env user/pass). Verified with
+  `LocalCluster(processes=True, n_workers=2)` + real MUR granules: workers
+  opened the granules, the token never left the client.
+- **`open_virtual(store, load=False)` now works for icechunk** (core): returns
+  the manifest form (`IcechunkParser` + concrete coords), matching the
+  kerchunk behavior. Verified against the notebook's real 31-timestep store.
+
 - **Reading stays specialized:** the plugin replaces `virtualize()` +
   `write_virtual()` only. `ea.open_virtual(uri, access=, force_external=,
   authorize_virtual_chunk_access=, storage_options=, load=False)` remains the

@@ -11,6 +11,9 @@ by the engine itself.
 from __future__ import annotations
 
 import logging
+import os
+import threading
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
@@ -24,6 +27,122 @@ if TYPE_CHECKING:
     from earthaccess_plugin_spec import AuthHandle
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RegistryConfig:
+    """Credential-free description of the registry a task needs.
+
+    Shipped to Dask workers instead of an obstore registry; the worker resolves
+    the token from its own environment and builds the stores there.
+    """
+
+    access: str
+    scheme: str
+    host: str
+    credentials_endpoint: str | None = None
+    region: str = "us-west-2"
+
+    def to_payload(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def build(self, token: str) -> Any:
+        from obspec_utils.registry import ObjectStoreRegistry
+        from obstore.auth.earthdata import NasaEarthdataCredentialProvider
+        from obstore.store import HTTPStore, S3Store
+
+        if self.scheme == "s3":
+            if self.credentials_endpoint is None:
+                msg = f"no S3 credentials endpoint for s3://{self.host}"
+                raise ValueError(msg)
+            store = S3Store(
+                bucket=self.host,
+                region=self.region,
+                credential_provider=NasaEarthdataCredentialProvider(
+                    self.credentials_endpoint,
+                    auth=token,
+                ),
+                virtual_hosted_style_request=False,
+                client_options={"allow_http": True},
+            )
+            return ObjectStoreRegistry({f"s3://{self.host}": store})
+
+        store = HTTPStore.from_url(
+            f"https://{self.host}",
+            client_options={
+                "default_headers": {"Authorization": f"Bearer {token}"},
+            },
+        )
+        return ObjectStoreRegistry({f"https://{self.host}": store})
+
+
+class LazyObjectStoreRegistry:
+    """A registry that rebuilds its credentialed stores after pickling.
+
+    Client-side it holds the token (so the first resolve is immediate); its
+    ``__reduce__`` ships only :class:`RegistryConfig`, so a Dask worker rebuilds
+    the registry from its own environment. Reading credentials never leave the
+    process that holds them.
+    """
+
+    def __init__(self, config: RegistryConfig, *, token: str | None = None) -> None:
+        self._config = config
+        self._token = token
+        self._real: Any = None
+        self._lock = threading.Lock()
+
+    @property
+    def config(self) -> RegistryConfig:
+        return self._config
+
+    def _ensure(self) -> Any:
+        if self._real is None:
+            with self._lock:
+                if self._real is None:
+                    self._real = self._config.build(self._token or _worker_token())
+        return self._real
+
+    def resolve(self, url: str) -> Any:
+        return self._ensure().resolve(url)
+
+    def register(self, url: str, store: Any) -> None:
+        self._ensure().register(url, store)
+
+    def __reduce__(self) -> Any:
+        return (_rebuild_lazy_registry, (self._config,))
+
+
+def _rebuild_lazy_registry(config: RegistryConfig) -> LazyObjectStoreRegistry:
+    return LazyObjectStoreRegistry(config)
+
+
+def _worker_token() -> str:
+    """Resolve an EDL token where the task runs (env, then netrc)."""
+
+    token = os.environ.get("EARTHDATA_TOKEN")
+    if token:
+        return token
+
+    import earthaccess
+
+    for strategy in ("environment", "netrc"):
+        try:
+            earthaccess.login(strategy=strategy)
+            break
+        except Exception:  # noqa: BLE001, S112 - try the next strategy
+            continue
+    auth = getattr(earthaccess, "__auth__", None)
+    resolved = getattr(auth, "token", None)
+    if isinstance(resolved, dict) and resolved.get("access_token"):
+        return str(resolved["access_token"])
+    if isinstance(resolved, str):
+        return resolved
+    msg = (
+        "this worker has no Earthdata credentials: set EARTHDATA_TOKEN (or "
+        "EARTHDATA_USERNAME/EARTHDATA_PASSWORD), provide ~/.netrc, or call "
+        "earthaccess.distribute_credentials(...) from the client"
+    )
+    raise ValueError(msg)
 
 
 def get_granule_credentials_endpoint_and_region(granule: Any) -> tuple[str, str]:
@@ -108,9 +227,8 @@ def build_obstore_registry(
         ImportError: If virtualizarr/obstore are not installed.
     """
     try:
-        from obspec_utils.registry import ObjectStoreRegistry  # noqa: PLC0415
-        from obstore.auth.earthdata import NasaEarthdataCredentialProvider  # noqa: PLC0415
-        from obstore.store import HTTPStore, S3Store  # noqa: PLC0415
+        import obspec_utils  # noqa: F401, PLC0415
+        import obstore  # noqa: F401, PLC0415
     except ImportError:
         msg = "earthaccess_vds requires `obstore>=0.12` and `virtualizarr>=2.8`"
         raise ImportError(msg) from None
@@ -119,32 +237,21 @@ def build_obstore_registry(
 
     parsed_url = urlparse(granules[0].data_links(access=access)[0])
     token = _edl_token(auth)
+    host = parsed_url.netloc
 
     if access == "direct":
         credentials_endpoint, region = get_granule_credentials_endpoint_and_region(
             granules[0],
         )
-        bucket = parsed_url.netloc
-        s3_store = S3Store(
-            bucket=bucket,
+        config = RegistryConfig(
+            access="direct",
+            scheme="s3",
+            host=host,
+            credentials_endpoint=credentials_endpoint,
             region=region,
-            credential_provider=NasaEarthdataCredentialProvider(
-                credentials_endpoint,
-                auth=token,
-            ),
-            virtual_hosted_style_request=False,
-            client_options={"allow_http": True},
         )
-        return ObjectStoreRegistry({f"s3://{bucket}": s3_store})
+    else:
+        config = RegistryConfig(access="indirect", scheme="https", host=host)
 
-    # indirect — HTTPS
-    domain = parsed_url.netloc
-    http_store = HTTPStore.from_url(
-        f"https://{domain}",
-        client_options={
-            "default_headers": {
-                "Authorization": f"Bearer {token}",
-            },
-        },
-    )
-    return ObjectStoreRegistry({f"https://{domain}": http_store})
+    # The object holds the token client-side; pickling ships only the config.
+    return LazyObjectStoreRegistry(config, token=token)

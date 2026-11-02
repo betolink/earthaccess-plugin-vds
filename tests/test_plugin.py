@@ -420,3 +420,122 @@ def test_progress_executor_counts_and_cancels() -> None:
     assert executor.cancel() is True
     assert blocking.cancelled()
     executor.shutdown(wait=False, cancel_futures=True)
+
+
+# ---------------------------------------------------------------------------
+# explicit Dask client
+# ---------------------------------------------------------------------------
+
+
+class _ImmediateFuture:
+    def __init__(self, value: Any = None, exc: BaseException | None = None) -> None:
+        self._value = value
+        self._exc = exc
+        self._callbacks: list[Any] = []
+        self._cancelled = False
+
+    def add_done_callback(self, fn: Any) -> None:
+        self._callbacks.append(fn)
+        fn(self)
+
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    def exception(self) -> BaseException | None:
+        return self._exc
+
+    def result(self, timeout: float | None = None) -> Any:
+        del timeout
+        if self._exc is not None:
+            raise self._exc
+        return self._value
+
+    def cancel(self) -> bool:
+        self._cancelled = True
+        return True
+
+
+class _FakeClient:
+    def __init__(self) -> None:
+        self.dashboard_link = "http://dashboard"
+        self.submitted: list[tuple[Any, tuple[Any, ...]]] = []
+        self.canceled: list[Any] = []
+
+    def submit(self, fn: Any, *args: Any, **kwargs: Any) -> _ImmediateFuture:
+        self.submitted.append((fn, args))
+        return _ImmediateFuture(fn(*args, **kwargs))
+
+    def cancel(self, futures: Any) -> None:
+        self.canceled.extend(futures)
+
+
+def test_request_submits_opens_to_an_explicit_client(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    from earthaccess_vds.progress import ProgressExecutor
+
+    client = _FakeClient()
+    captured: dict[str, Any] = {}
+
+    def fake_virtualize(
+        granules: Any, *, progress: Any = None, parallel: Any = None, **kwargs: Any
+    ) -> xr.Dataset:
+        del kwargs
+        captured["executor"] = parallel
+        progress.start("virtualize", total=2)
+        assert isinstance(parallel, ProgressExecutor)
+        list(parallel.map(lambda value: value, range(2)))
+        return make_vds("2013-01-01")
+
+    monkeypatch.setattr("earthaccess_vds.engine.virtualize", fake_virtualize)
+    job = _plugin().request(
+        sample_result_set(umms=[{"GranuleUR": "G1"}, {"GranuleUR": "G2"}]),
+        concat_dim="time",
+        client=client,
+    )
+
+    assert job.wait(timeout=30) is JobStatus.SUCCEEDED, job.info()
+    assert len(client.submitted) == 2
+    assert job.info()["dashboard"] == "http://dashboard"
+    assert captured["executor"].state.snapshot()["opened"] == 2
+    assert isinstance(getattr(job, "_executor", None), ProgressExecutor)
+
+
+def test_request_rejects_a_non_client() -> None:
+    with pytest.raises(TypeError, match="distributed.Client"):
+        _plugin().request(sample_result_set(), concat_dim="time", client=object())
+
+
+def test_progress_executor_cancels_through_the_client() -> None:
+    import time
+
+    from earthaccess_vds.progress import ProgressExecutor, ProgressState
+
+    client = _FakeClient()
+    state = ProgressState()
+    state.start("virtualize", total=1)
+    executor = ProgressExecutor(state, client=client, show_progress=False)
+
+    executor.submit(time.sleep, 0)
+
+    assert executor.cancel() is True
+    assert client.canceled
+
+
+def test_open_virtual_load_false_returns_manifest_arrays(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    import earthaccess
+    from virtualizarr.manifests import ManifestArray
+
+    store = str(tmp_path / "sst.icechunk")
+    job, status = _request(
+        monkeypatch, make_vds("2013-01-01"), store=store, concat_dim="time"
+    )
+    assert status is JobStatus.SUCCEEDED, job.info()
+    (asset,) = job.results()
+
+    references = earthaccess.open_virtual(asset.href, load=False)
+
+    assert isinstance(references["sst"].data, ManifestArray)
+    assert references.sizes["time"] == 1

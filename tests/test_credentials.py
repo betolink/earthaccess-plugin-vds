@@ -46,3 +46,45 @@ def test_token_error_names_the_fix(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(ValueError, match="login"):
         _edl_token(handle)
+
+
+def test_lazy_registry_pickles_without_the_token() -> None:
+    import pickle
+
+    from earthaccess_vds.credentials import LazyObjectStoreRegistry, RegistryConfig
+
+    config = RegistryConfig(
+        access="indirect",
+        scheme="https",
+        host="archive.podaac.earthdata.nasa.gov",
+    )
+    registry = LazyObjectStoreRegistry(config, token="super-secret-token")
+
+    blob = pickle.dumps(registry)
+
+    assert b"super-secret-token" not in blob
+    restored = pickle.loads(blob)
+    assert restored.config == config
+    assert restored._token is None
+
+
+def test_registry_config_payload_is_credential_free() -> None:
+    from earthaccess_vds.credentials import RegistryConfig
+
+    payload = RegistryConfig(
+        access="direct",
+        scheme="s3",
+        host="podaac-bucket",
+        credentials_endpoint="https://archive.podaac.earthdata.nasa.gov/s3credentials",
+        region="us-west-2",
+    ).to_payload()
+
+    assert payload == {
+        "access": "direct",
+        "scheme": "s3",
+        "host": "podaac-bucket",
+        "credentials_endpoint": (
+            "https://archive.podaac.earthdata.nasa.gov/s3credentials"
+        ),
+        "region": "us-west-2",
+    }
