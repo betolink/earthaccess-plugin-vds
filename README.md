@@ -52,6 +52,15 @@ asset = ea.plugins.vds.request(
 
 # Store-to-store merge (both formats): merge a source store into a target.
 ea.plugins.vds.request(store="cube_v2", source="cube_v1", append_dim="time")
+
+# Virtualize another plugin's *file* output (e.g. a Harmony subset):
+# pass Assets or plain URLs. Derived files have no DMR++ sidecars, so the
+# default parser switches to HDFParser. OPeNDAP assets (pydap) are rejected:
+# a DAP response is not a byte-range-readable file.
+assets = ea.plugins.harmony.request(results, variables=["analysed_sst"]).results()
+asset = ea.plugins.vds.request(
+    None, assets=assets, store="subset.icechunk", concat_dim="time"
+).results()[0]
 ```
 
 `store=` also accepts an obstore `S3Store` / `LocalStore` (or an
@@ -67,6 +76,7 @@ same request also works on a Dask cluster whose workers carry the secrets.
 | `store` | Target store: local path, `s3://` URI, obstore store, or Storage. |
 | `format` | `"icechunk"` (default) or `"kerchunk"`. |
 | `source` | Existing store to merge into `store`. |
+| `assets` | File assets/URLs to virtualize instead of search results. |
 | `append_dim` | Append dimension; defaults to `concat_dim` when the store exists. |
 | `replace` | Kerchunk only: rewrite references in place (stable href). |
 | `commit` | Icechunk only: commit the write (default `True`). |

@@ -539,3 +539,85 @@ def test_open_virtual_load_false_returns_manifest_arrays(
 
     assert isinstance(references["sst"].data, ManifestArray)
     assert references.sizes["time"] == 1
+
+
+# ---------------------------------------------------------------------------
+# list-of-assets input (e.g. Harmony subset output)
+# ---------------------------------------------------------------------------
+
+
+def test_assets_are_virtualized_via_the_hdf_parser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = captured_virtualize(
+        monkeypatch, make_vds("2013-01-01", url="https://example.com/a.nc")
+    )
+    asset = Asset(
+        href="https://example.com/a.nc", access="https", auth="edl", format="netcdf4"
+    )
+
+    job = _plugin().request(None, assets=[asset], concat_dim="time")
+    assert job.wait(timeout=30) is JobStatus.SUCCEEDED, job.info()
+    assert job.output == "virtual"
+
+    granules = calls[0]["granules"]
+    assert [granule.data_links()[0] for granule in granules] == [
+        "https://example.com/a.nc"
+    ]
+    assert calls[0]["parser"] == "HDFParser"
+    assert calls[0]["registry"] is not None
+
+
+def test_assets_can_be_written_to_a_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    captured_virtualize(
+        monkeypatch, make_vds("2013-01-01", url="https://example.com/a.nc")
+    )
+    asset = Asset(
+        href="https://example.com/a.nc", access="https", auth="edl", format="netcdf4"
+    )
+    store = str(tmp_path / "harmony.icechunk")
+
+    job = _plugin().request(
+        None, assets=[asset], store=store, concat_dim="time"
+    )
+
+    assert job.wait(timeout=30) is JobStatus.SUCCEEDED, job.info()
+    (result,) = job.results()
+    assert result.href == store
+    assert _open_icechunk(store).sizes["time"] == 1
+
+
+def test_opendap_assets_are_rejected() -> None:
+    asset = Asset(href="https://x/dap4", access="opendap", auth="edl")
+
+    with pytest.raises(ValueError, match="OPeNDAP"):
+        _plugin().request(None, assets=[asset], concat_dim="time")
+
+
+def test_non_file_assets_are_rejected() -> None:
+    asset = Asset(href="https://x/data.zarr", access="https", auth="edl", format="zarr")
+
+    with pytest.raises(ValueError, match="zarr"):
+        _plugin().request(None, assets=[asset], concat_dim="time")
+
+
+def test_assets_and_results_are_mutually_exclusive() -> None:
+    asset = Asset(href="https://x/a.nc", access="https", auth="edl", format="netcdf4")
+
+    with pytest.raises(ValueError, match="not both"):
+        _plugin().request(sample_result_set(), assets=[asset], concat_dim="time")
+
+
+def test_registry_for_derived_assets_keeps_the_token_local() -> None:
+    from earthaccess_vds.credentials import build_registry_for_urls
+
+    s3 = build_registry_for_urls(["s3://my-bucket/out.nc"])
+    assert s3.config.host == "my-bucket"
+    assert s3.config.credentials_endpoint is None
+    assert s3.config.needs_token is False
+
+    other = build_registry_for_urls(["https://storage.example.com/out.nc"])
+    assert other.config.needs_token is False
+    assert other._token is None

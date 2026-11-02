@@ -87,4 +87,5 @@ def test_registry_config_payload_is_credential_free() -> None:
             "https://archive.podaac.earthdata.nasa.gov/s3credentials"
         ),
         "region": "us-west-2",
+        "needs_token": True,
     }

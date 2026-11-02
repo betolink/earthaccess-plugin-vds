@@ -156,6 +156,13 @@ covered.**
 
 ### Phase 2 — done notes
 
+- **`assets=` composition:** `request(None, assets=[Asset|url, ...], ...)`
+  virtualizes another plugin's file output (Harmony subset). Defaults to
+  `HDFParser`; the registry is URL-derived (`s3://` → env AWS creds, NASA HTTPS
+  → EDL bearer, other hosts anonymous). OPeNDAP assets (pydap) are rejected
+  with a clear error, as are Zarr/GeoTIFF/CSV assets. `h5py` is now a plugin
+  dependency (the HDF fallback needs it). Verified with 2 real MUR file URLs.
+
 - **Cluster execution is in:** `Options.client` accepts an existing
   `distributed.Client`; `ProgressExecutor` submits through `client.submit`
   (counters via done-callbacks, cancel via `client.cancel`,

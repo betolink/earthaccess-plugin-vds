@@ -42,6 +42,7 @@ class RegistryConfig:
     host: str
     credentials_endpoint: str | None = None
     region: str = "us-west-2"
+    needs_token: bool = True
 
     def to_payload(self) -> dict[str, Any]:
         return asdict(self)
@@ -52,27 +53,25 @@ class RegistryConfig:
         from obstore.store import HTTPStore, S3Store
 
         if self.scheme == "s3":
-            if self.credentials_endpoint is None:
-                msg = f"no S3 credentials endpoint for s3://{self.host}"
-                raise ValueError(msg)
+            provider = None
+            if self.credentials_endpoint is not None:
+                provider = NasaEarthdataCredentialProvider(
+                    self.credentials_endpoint,
+                    auth=token,
+                )
             store = S3Store(
                 bucket=self.host,
                 region=self.region,
-                credential_provider=NasaEarthdataCredentialProvider(
-                    self.credentials_endpoint,
-                    auth=token,
-                ),
+                credential_provider=provider,
                 virtual_hosted_style_request=False,
                 client_options={"allow_http": True},
             )
             return ObjectStoreRegistry({f"s3://{self.host}": store})
 
-        store = HTTPStore.from_url(
-            f"https://{self.host}",
-            client_options={
-                "default_headers": {"Authorization": f"Bearer {token}"},
-            },
-        )
+        options: Any = {}
+        if self.needs_token and token:
+            options["default_headers"] = {"Authorization": f"Bearer {token}"}
+        store = HTTPStore.from_url(f"https://{self.host}", client_options=options)
         return ObjectStoreRegistry({f"https://{self.host}": store})
 
 
@@ -99,7 +98,10 @@ class LazyObjectStoreRegistry:
         if self._real is None:
             with self._lock:
                 if self._real is None:
-                    self._real = self._config.build(self._token or _worker_token())
+                    token = self._token
+                    if token is None and self._config.needs_token:
+                        token = _worker_token()
+                    self._real = self._config.build(token or "")
         return self._real
 
     def resolve(self, url: str) -> Any:
@@ -255,3 +257,46 @@ def build_obstore_registry(
 
     # The object holds the token client-side; pickling ships only the config.
     return LazyObjectStoreRegistry(config, token=token)
+
+
+def build_registry_for_urls(
+    urls: Sequence[str],
+    *,
+    auth: AuthHandle | None = None,
+) -> LazyObjectStoreRegistry:
+    """Build a registry for plain file URLs (not granules).
+
+    Used when the input is a list of file assets (for example Harmony subset
+    output) rather than NASA granules:
+
+    - ``s3://`` uses the environment's AWS credentials, because derived outputs
+      live in the requester's bucket rather than behind NASA S3 credentials;
+    - NASA HTTPS hosts get the EDL bearer token;
+    - other HTTPS hosts stay anonymous, so the token is never sent to a third
+      party (presigned URLs do not need it).
+    """
+
+    first = urlparse(str(urls[0]))
+    if first.scheme == "s3":
+        region = (
+            os.environ.get("AWS_DEFAULT_REGION")
+            or os.environ.get("AWS_REGION")
+            or "us-west-2"
+        )
+        config = RegistryConfig(
+            access="direct",
+            scheme="s3",
+            host=first.netloc,
+            region=region,
+            needs_token=False,
+        )
+        return LazyObjectStoreRegistry(config)
+
+    nasa = "nasa.gov" in first.netloc.lower()
+    config = RegistryConfig(
+        access="indirect",
+        scheme="https",
+        host=first.netloc,
+        needs_token=nasa,
+    )
+    return LazyObjectStoreRegistry(config, token=_edl_token(auth) if nasa else None)

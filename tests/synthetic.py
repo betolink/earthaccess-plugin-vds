@@ -44,7 +44,7 @@ def captured_virtualize(monkeypatch: Any, vds: xr.Dataset) -> list[dict[str, Any
     calls: list[dict[str, Any]] = []
 
     def fake_virtualize(granules: Any, **kwargs: Any) -> xr.Dataset:
-        calls.append(kwargs)
+        calls.append({"granules": granules, **kwargs})
         return vds
 
     monkeypatch.setattr("earthaccess_vds.engine.virtualize", fake_virtualize)

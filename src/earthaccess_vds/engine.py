@@ -66,6 +66,7 @@ def virtualize(  # noqa: PLR0913, C901
     tree: bool = False,
     auth: AuthHandle | None = None,
     progress: Any = None,
+    registry: Any = None,
     **xr_combine_kwargs: Any,
 ) -> xr.Dataset | xr.DataTree:
     """Create a virtual xarray Dataset from NASA Earthdata granules.
@@ -79,6 +80,10 @@ def virtualize(  # noqa: PLR0913, C901
     default ``"DMRPPParser"`` uses NASA pre-computed DMR++ sidecar files; when
     those sidecars are absent the engine automatically falls back to
     ``"HDFParser"`` and emits a ``UserWarning``.
+
+    ``granules`` may also be lightweight adapters over plain file URLs (see
+    ``earthaccess_vds.plugin._asset_granules``); pass ``registry`` to use a
+    registry built from those URLs instead of the granule-derived one.
     """
     if len(granules) == 0:
         msg = "No granules provided. At least one granule is required."
@@ -116,7 +121,9 @@ def virtualize(  # noqa: PLR0913, C901
     if progress is not None:
         progress.start("virtualize", total=len(granules))
 
-    registry = build_obstore_registry(granules, access=access, auth=auth)
+    own_registry = registry is None
+    if registry is None:
+        registry = build_obstore_registry(granules, access=access, auth=auth)
 
     def _open_once(parser_obj: Any, obj_registry: Any) -> xr.Dataset | xr.DataTree:
         return _open_virtual_dispatch(
@@ -160,7 +167,8 @@ def virtualize(  # noqa: PLR0913, C901
             "HDFParser",
             group=group if group != "/" else None,
         )
-        registry = build_obstore_registry(granules, access=access, auth=auth)
+        if own_registry:
+            registry = build_obstore_registry(granules, access=access, auth=auth)
         if progress is not None:
             progress.start("virtualize", total=len(granules))
         vds = _open_once(resolved_parser, registry)
