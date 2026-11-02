@@ -156,6 +156,13 @@ covered.**
 
 ### Phase 2 — done notes
 
+- **Reading stays specialized:** the plugin replaces `virtualize()` +
+  `write_virtual()` only. `ea.open_virtual(uri, access=, force_external=,
+  authorize_virtual_chunk_access=, storage_options=, load=False)` remains the
+  virtual reader; `ea.open(asset)` is the generic shorthand used by the
+  notebook (`open_virtual(asset.href)` for the explicit form). No deprecation
+  shim is planned for `open_virtual()`.
+
 - **Bug fixed after a real run:** `LazyEDLAuthHandle.token()` calls
   `earthaccess.get_edl_token()`, which compared `Auth.token` to `str`; the EDL
   login stores the token *response mapping* (`access_token` + metadata), so the
