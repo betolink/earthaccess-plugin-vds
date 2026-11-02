@@ -66,5 +66,9 @@ module = ["pytest", "pytest.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = ["kerchunk", "kerchunk.*", "fsspec", "fsspec.*", "fastparquet", "s3fs"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = ["tests.*"]
 disallow_untyped_defs = false

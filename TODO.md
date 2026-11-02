@@ -5,7 +5,8 @@ Handoff notes for any agent continuing this work. **Canonical design plan:**
 `virtual-plugin`) — read §3 (user-facing design) and §13 (decisions) before
 writing code. This file tracks progress + next steps only.
 
-Last updated: 2026-11-02 (after engine slice, commit `51173d7`).
+Last updated: 2026-11-02 (after stores slice: local create+append works for
+both formats; see `tests/test_plugin.py`).
 
 ## Repos / branches / state
 
@@ -44,6 +45,21 @@ plugins load, fork `test_plugins.py` 22/22). `CONTRACT_VERSION` stays 1.
 **Plan revisions (fork `virtual-plugin`, commits `db6ffee` + pin commit):**
 persisting always returns an Asset; `load` split from store writes;
 `source=` store-to-store merge; fork pins spec `@vds-contract` (+ `uv.lock`).
+
+**Phase 2 slice 2 — stores (plugin `main`):** `storage.py` (target resolution:
+path / `s3://` / obstore `S3Store`|`LocalStore` / icechunk `Storage`; env-resolved
+credentials; provider → refreshable `S3StaticCredentials` bridge), `writer.py`
+(icechunk `open_or_create` + VCC merge-on-append + commit; kerchunk
+`to_kerchunk(format="dict")` → `refs_to_dataframe`, versioned `_v2.parquet`
+append dirs, `replace=True`), `engine.open_refs_store` /
+`combine_virtual` / `materialize_coords` (append + `source=` reopening),
+`plugin.py` wiring (Options, eager validation, output kinds, icechunk vs
+kerchunk orchestration). Tests are top-level (`tests/test_plugin.py`, 16 cases
+driving `VDSPlugin.request` end to end against **real local** icechunk repos and
+kerchunk dirs; only `virtualize` is faked) + updated conformance fixtures
+(`tests/test_conformance.py`, real local write). 37 tests green, mypy/ruff
+clean. **Local-filesystem create+append acceptance for both formats is
+covered.**
 
 ## Binding design decisions (do not relitigate)
 
@@ -113,44 +129,53 @@ persisting always returns an Asset; `load` split from store writes;
 
 ## Remaining work (in order; TDD everywhere — red first, mocked/offline tests)
 
-### Phase 2 (this repo)
+### Phase 2 (this repo) — remaining
 
-1. **`storage.py` + `tests/test_storage.py`** — target resolution:
-   `str | Path | S3Store | LocalStore | icechunk.Storage` → icechunk `Storage`
-   (+ bucket/prefix); derive `Asset` `href`/`access`/`format`. Bridge the
-   obstore credential provider → `get_credentials`/`S3StaticCredentials`
-   (spike: exact obstore `Credential` field names — one function).
-2. **`writer.py` + `tests/test_writer.py`** — port fixtures from
-   `~/github/betolink/earthaccess/tests/unit/test_virtual_write.py`
-   (`FakeManifestArray` etc.). Icechunk writer (open_or_create, **VCC
-   merge-on-append** against a mocked `Repository`, commit, append_dim);
-   kerchunk writer (dict → `refs_to_dataframe`, versioned dir, `replace=True`
-   rm+rewrite with mocked fsspec); Asset construction; validation (existing
-   store without `append_dim`/`concat_dim` → clear error; `replace` only with
-   kerchunk; `commit` icechunk-only).
-3. **`credentials.py` worker-side + tests** — serializable registry config
-   (no secrets), per-worker lazy env login, registry build inside the task;
-   **no-secrets test**: `pickle.dumps` of every task payload contains no
-   token/key material; typed error naming missing env vars.
-4. **`progress.py` + tests** — `ProgressExecutor` (concurrent.futures Executor
-   protocol: `submit`/`map`/context manager; detects active client;
-   `client.compute` → futures; tqdm callbacks; dashboard link) and
-   `VirtualJob(Job)` (`_poll` aggregates futures → status +
-   `{"opened", "total", "failed", "phase", "dashboard"}`; `_cancel` =
-   `client.cancel`; local threaded fallback). Spikes: whether
-   `open_virtual_mfdataset` drives the executor via `submit` or `map`; tqdm
-   callback ordering.
-5. **`engine.open_refs_store()` + tests** — port `_open_virtual_via_virtualizarr`
-   (parquet branch) + the IcechunkParser path; used by append and `source=`;
-   combine via `xr.combine_nested([old, delta], concat_dim=…)`.
-6. **`plugin.py` + conformance** — final `Options` (see plan §3.2), output
-   wiring (assets default, per-job override), `_supports` (data-links check →
-   VIRTUALIZE/APPEND + store formats), `_request` orchestration (delta →
-   write; `source` merge; `append_dim ← concat_dim`), validation rules;
-   fixtures for `run_conformance` (drive the store path so `job.output`
-   matches the declared `"assets"`); update `tests/test_conformance.py`;
-   README.
-7. Commit style: conventional commits, ruff + mypy clean, push.
+1. **Worker-side credentials + no-secrets test** — serializable registry
+   *config* (URLs, access mode, credentials endpoint — nothing secret), per-worker
+   lazy `earthaccess.login(strategy="environment")` + registry build inside the
+   task, typed error naming missing env vars. Test: `pickle.dumps` of every task
+   payload contains no token/key material.
+2. **`progress.py` + tests** — `ProgressExecutor` (concurrent.futures Executor
+   protocol; detects the active `distributed` Client; tqdm callbacks) and
+   `VirtualJob(Job)` (`_poll` → `{"opened", "total", "failed", "phase",
+   "dashboard"}`, `_cancel` = `client.cancel`). Wire `show_progress`/`parallel`
+   into `engine.virtualize` (it is a no-op option today).
+3. **Review passes** — `source=` for kerchunk (works via
+   `open_refs_store`+`combine`; only the icechunk path is covered by a test
+   today), `s3://` write targets (env credentials; untested offline),
+   `tree=True` handling, docs in `README.md` (done — keep in sync).
+
+### Phase 2 — done notes
+
+- `storage.py` resolves path / `s3://` / obstore `S3Store`|`LocalStore` /
+  icechunk `Storage` (+`href=` for bare Storage) and derives the Asset
+  `href`/`access`. S3 targets use `Storage.new_s3_object_store(S3Options(...),
+  bucket, prefix, credentials=FromEnv())`; an obstore credential provider is
+  bridged to a refreshable `S3StaticCredentials` callback (credential flow
+  confirmed: obstore `S3Credential` keys are `access_key_id`,
+  `secret_access_key`, `token`, `expires_at`).
+- `writer.write_icechunk` uses `Repository.exists` only to decide create vs
+  append and VCC merging (single write task per job). On append it fetches the
+  stored config, adds missing prefixes, `save_config()`, then
+  `open_or_create` + `writable_session("main")` + `to_icechunk(append_dim)` +
+  `commit`. Verified locally (not just mocked) that save_config persists the
+  merged containers.
+- `writer.write_kerchunk` requires a `*.parquet` target name (refs are a
+  directory), versions to `_v2`/`_v3`, `replace=True` rm+rewrite, and writes via
+  `to_kerchunk(format="dict")` → `refs_to_dataframe(refs, href, storage_options=)`.
+- `engine.open_refs_store` reopens icechunk (`IcechunkParser`) and kerchunk
+  (`KerchunkParquetParser`) stores in manifest form and attaches concrete
+  coordinates; bare local paths are converted to `file://` for VirtualiZarr and
+  registered with the matching obstore registry.
+- `plugin.VDSPlugin` now validates eagerly (`load`+`store`, `replace` on
+  icechunk, `source` without `store`, `tree`+`store`, empty request) and
+  orchestrates: icechunk = sequential create/append (+ `source` first);
+  kerchunk = read old refs (if any) + `source` + delta, `combine_nested`, write.
+- Test layout: `tests/test_plugin.py` (top-level, real local stores),
+  `tests/synthetic.py` (manifest dataset factory), `tests/test_conformance.py`
+  (real local write with faked virtualize). `tests/` is now a package so
+  mypy's `tests.*` override applies.
 
 ### Phase 3 (fork, branch `virtual-plugin`)
 
