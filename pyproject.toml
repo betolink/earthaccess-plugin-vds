@@ -11,13 +11,24 @@ license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "Luis López", email = "betolin@gmail.com" }]
 dependencies = [
-  "earthaccess-plugin-spec @ git+https://github.com/betolink/earthaccess-plugin-spec.git@main",
+  # TODO: pin to the v0.3.0 tag once vds-contract is merged (and to the
+  # earthaccess-dev org URLs once the migration settles).
+  "earthaccess-plugin-spec @ git+https://github.com/betolink/earthaccess-plugin-spec.git@vds-contract",
+  # TODO: pin to earthaccess>=2.0.0 / the release containing the plugins work.
+  "earthaccess",
+  "virtualizarr>=2.8",
+  "obstore>=0.12",
+  "icechunk>=2.3",
+  "xarray",
+  "dask",
 ]
 
 [project.entry-points."earthaccess.plugins"]
 vds = "earthaccess_vds:VDSPlugin"
 
 [project.optional-dependencies]
+kerchunk = ["kerchunk>=0.2.9", "pandas", "fastparquet>=2023.4.0", "fsspec", "s3fs"]
+distributed = ["distributed"]
 test = ["pytest >=8.0", "mypy >=1.11", "ruff >=0.6"]
 
 [project.urls]
