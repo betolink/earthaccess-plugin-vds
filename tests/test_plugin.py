@@ -333,6 +333,7 @@ def test_earthaccess_open_opens_the_icechunk_store(
 
     ds = earthaccess.open(asset)
 
+    assert isinstance(ds, xr.Dataset)
     assert ds.sizes["time"] == 1
 
 
@@ -354,4 +355,5 @@ def test_earthaccess_open_opens_the_kerchunk_store(
 
     ds = earthaccess.open(asset)
 
+    assert isinstance(ds, xr.Dataset)
     assert ds.sizes["time"] == 1
